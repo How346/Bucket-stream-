@@ -1,0 +1,90 @@
+name: Video Slicer to Private B2
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: 'Direct MP4 Video URL'
+        required: true
+        default: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4'
+      folder_name:
+        description: 'Folder Name (without spaces)'
+        required: true
+        default: 'movie1'
+
+jobs:
+  process-and-upload:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          pip install boto3
+
+      - name: Download and Slice Video
+        run: |
+          mkdir -p output
+          echo ">> Downloading video file..."
+          wget -q -O input.mp4 "${{ github.event.inputs.video_url }}"
+          
+          echo ">> Slicing to .jpg segments via FFmpeg..."
+          ffmpeg -i input.mp4 -codec copy -start_number 0 -hls_time 4 -hls_list_size 0 -hls_segment_filename "output/seg_%03d.jpg" output/playlist.m3u8
+
+      - name: Upload to Backblaze Private Bucket
+        env:
+          KEY_ID: ${{ secrets.B2_KEY_ID }}
+          APP_KEY: ${{ secrets.B2_APP_KEY }}
+          BUCKET: ${{ secrets.B2_BUCKET_NAME }}
+          ENDPOINT: ${{ secrets.B2_ENDPOINT }}
+          CF_WORKER_URL: ${{ secrets.CF_WORKER_URL }}
+          FOLDER: ${{ github.event.inputs.folder_name }}
+        run: |
+          python - <<EOF
+          import os, boto3
+          from concurrent.futures import ThreadPoolExecutor
+
+          endpoint = f"https://{os.environ['ENDPOINT']}"
+          s3 = boto3.client(
+              's3',
+              endpoint_url=endpoint,
+              aws_access_key_id=os.environ['KEY_ID'],
+              aws_secret_access_key=os.environ['APP_KEY']
+          )
+          
+          bucket = os.environ['BUCKET']
+          folder = os.environ['FOLDER']
+          files = os.listdir('output')
+
+          def upload_file(filename):
+              file_path = os.path.join('output', filename)
+              content_type = "image/jpeg" if filename.endswith(".jpg") else "application/vnd.apple.mpegurl"
+              s3.upload_file(
+                  file_path,
+                  bucket,
+                  f"{folder}/{filename}",
+                  ExtraArgs={
+                      "ContentType": content_type,
+                      "CacheControl": "public, max-age=2592000"
+                  }
+              )
+
+          print(f"Uploading {len(files)} files to Private B2...")
+          with ThreadPoolExecutor(max_workers=10) as executor:
+              list(executor.map(upload_file, files))
+          
+          worker_base = os.environ.get('CF_WORKER_URL', 'https://your-worker.workers.dev').rstrip('/')
+          public_stream_url = f"{worker_base}/{folder}/playlist.m3u8"
+          
+          print("\n" + "="*60)
+          print("SUCCESS! YOUR PUBLIC M3U8 STREAM LINK:")
+          print(public_stream_url)
+          print("="*60 + "\n")
+          EOF
