@@ -25,7 +25,7 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install Dependencies (FFmpeg & Boto3 & yt-dlp)
+      - name: Install System Dependencies (FFmpeg & yt-dlp)
         run: |
           echo ">> Installing FFmpeg..."
           sudo apt-get update -qq
@@ -45,7 +45,7 @@ jobs:
             -f "best[ext=mp4]/best" \
             -o "input.mp4" "${{ github.event.inputs.video_url }}"
           
-          echo ">> Checking downloaded file..."
+          echo ">> Checking downloaded file size..."
           ls -lh input.mp4
 
       - name: Slice Video via FFmpeg
@@ -67,19 +67,42 @@ jobs:
           FOLDER: ${{ github.event.inputs.folder_name }}
         run: |
           python - <<EOF
-          import os, boto3
+          import os, sys, boto3
           from concurrent.futures import ThreadPoolExecutor
 
-          endpoint = f"https://{os.environ['ENDPOINT']}"
+          raw_endpoint = os.environ.get('ENDPOINT', '').strip()
+          key_id = os.environ.get('KEY_ID', '').strip()
+          app_key = os.environ.get('APP_KEY', '').strip()
+          bucket = os.environ.get('BUCKET', '').strip()
+
+          # चेक करें कि कोई सीक्रेट छूटा तो नहीं है
+          missing = []
+          if not raw_endpoint: missing.append("B2_ENDPOINT")
+          if not key_id: missing.append("B2_KEY_ID")
+          if not app_key: missing.append("B2_APP_KEY")
+          if not bucket: missing.append("B2_BUCKET_NAME")
+
+          if missing:
+              print("\n" + "!"*60)
+              print(f"[CRITICAL ERROR] Missing GitHub Secrets: {', '.join(missing)}")
+              print("Please add them in Repo Settings -> Secrets and variables -> Actions")
+              print("!"*60 + "\n")
+              sys.exit(1)
+
+          # Endpoint ऑटो-फॉर्मेटिंग (https:// और ट्रेलिंग स्लैश हटाना)
+          clean_host = raw_endpoint.replace("https://", "").replace("http://", "").strip("/")
+          endpoint_url = f"https://{clean_host}"
+
+          print(f">> Connecting to Backblaze endpoint: {endpoint_url}")
+
           s3 = boto3.client(
               's3',
-              endpoint_url=endpoint,
-              aws_access_key_id=os.environ['KEY_ID'],
-              aws_secret_access_key=os.environ['APP_KEY']
+              endpoint_url=endpoint_url,
+              aws_access_key_id=key_id,
+              aws_secret_access_key=app_key
           )
           
-          bucket = os.environ['BUCKET']
-          folder = os.environ['FOLDER']
+          folder = os.environ.get('FOLDER', 'movie1').strip()
           files = os.listdir('output')
 
           def upload_file(filename):
@@ -95,18 +118,19 @@ jobs:
                   }
               )
 
-          print(f">> Uploading {len(files)} files to Backblaze Private B2...")
+          print(f">> Uploading {len(files)} files to Backblaze Private B2 ({bucket})...")
           with ThreadPoolExecutor(max_workers=10) as executor:
               list(executor.map(upload_file, files))
           
-          worker_base = os.environ.get('CF_WORKER_URL', '').rstrip('/')
+          worker_base = os.environ.get('CF_WORKER_URL', '').strip().rstrip('/')
           if not worker_base:
               worker_base = "https://YOUR_WORKER_NAME.workers.dev"
               
           public_stream_url = f"{worker_base}/{folder}/playlist.m3u8"
           
           print("\n" + "="*60)
-          print("SUCCESS! YOUR PUBLIC M3U8 STREAM LINK:")
+          print("SUCCESS! ALL SEGMENTS UPLOADED.")
+          print("YOUR PUBLIC STREAMING LINK:")
           print(public_stream_url)
           print("="*60 + "\n")
           EOF
