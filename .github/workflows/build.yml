@@ -20,19 +20,11 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      - name: Install System Dependencies (FFmpeg & yt-dlp)
+      - name: Install System Tools (FFmpeg, yt-dlp & Rclone)
         run: |
-          echo ">> Installing FFmpeg..."
+          echo ">> Installing FFmpeg and Rclone..."
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg
-
-          echo ">> Installing Python Boto3 & Urllib3..."
-          pip install boto3 urllib3 -q
+          sudo apt-get install -y -qq ffmpeg rclone
 
           echo ">> Installing yt-dlp..."
           sudo wget -qO /usr/local/bin/yt-dlp https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp
@@ -57,84 +49,44 @@ jobs:
           echo ">> Total segments created:"
           ls output | wc -l
 
-      - name: Upload to Backblaze Private Bucket
-        env:
-          KEY_ID: ${{ vars.B2_KEY_ID }}
-          APP_KEY: ${{ vars.B2_APP_KEY }}
-          BUCKET: ${{ vars.B2_BUCKET_NAME }}
-          ENDPOINT: ${{ vars.B2_ENDPOINT }}
-          CF_WORKER_URL: ${{ vars.CF_WORKER_URL }}
-          FOLDER: ${{ github.event.inputs.folder_name }}
+      - name: Configure Rclone for Backblaze B2
         run: |
-          python - <<EOF
-          import os, sys, time, boto3
-          from botocore.config import Config
-          from concurrent.futures import ThreadPoolExecutor
-
-          raw_endpoint = os.environ.get('ENDPOINT', '').strip()
-          key_id = os.environ.get('KEY_ID', '').strip()
-          app_key = os.environ.get('APP_KEY', '').strip()
-          bucket = os.environ.get('BUCKET', '').strip()
-
-          clean_host = raw_endpoint.replace("https://", "").replace("http://", "").strip("/")
-          endpoint_url = f"https://{clean_host}"
-
-          # SSL Drop और Connection Pool से निपटने के लिए कॉन्फ़िगरेशन
-          b2_config = Config(
-              max_pool_connections=25,
-              retries={
-                  'max_attempts': 5,
-                  'mode': 'adaptive'
-              }
-          )
-
-          s3 = boto3.client(
-              's3',
-              endpoint_url=endpoint_url,
-              aws_access_key_id=key_id,
-              aws_secret_access_key=app_key,
-              config=b2_config
-          )
-          
-          folder = os.environ.get('FOLDER', 'movie1').strip()
-          files = os.listdir('output')
-
-          # री-ट्राई सेफ अपलोड फंक्शन
-          def upload_file(filename):
-              file_path = os.path.join('output', filename)
-              content_type = "image/jpeg" if filename.endswith(".jpg") else "application/vnd.apple.mpegurl"
-              
-              for attempt in range(4):
-                  try:
-                      s3.upload_file(
-                          file_path,
-                          bucket,
-                          f"{folder}/{filename}",
-                          ExtraArgs={
-                              "ContentType": content_type,
-                              "CacheControl": "public, max-age=2592000"
-                          }
-                      )
-                      return True
-                  except Exception as e:
-                      if attempt == 3:
-                          print(f"\n[FAILED] {filename}: {e}")
-                          raise e
-                      time.sleep(1 + attempt)
-
-          print(f">> Uploading {len(files)} files with SSL resilience (5 workers)...")
-          with ThreadPoolExecutor(max_workers=5) as executor:
-              list(executor.map(upload_file, files))
-          
-          worker_base = os.environ.get('CF_WORKER_URL', '').strip().rstrip('/')
-          if not worker_base:
-              worker_base = "https://YOUR_WORKER_NAME.workers.dev"
-              
-          public_stream_url = f"{worker_base}/{folder}/playlist.m3u8"
-          
-          print("\n" + "="*60)
-          print("SUCCESS! ALL SEGMENTS UPLOADED CLEANLY.")
-          print("YOUR PUBLIC STREAMING LINK:")
-          print(public_stream_url)
-          print("="*60 + "\n")
+          mkdir -p ~/.config/rclone
+          cat <<EOF > ~/.config/rclone/rclone.conf
+          [b2remote]
+          type = b2
+          account = ${{ vars.B2_KEY_ID }}
+          key = ${{ vars.B2_APP_KEY }}
+          hard_delete = true
           EOF
+
+      - name: Upload to Backblaze via Rclone
+        run: |
+          echo ">> Uploading all segments with Rclone (Native B2 API - Zero SSL Drops)..."
+          rclone copy output/ "b2remote:${{ vars.B2_BUCKET_NAME }}/${{ github.event.inputs.folder_name }}/" \
+            --transfers=8 \
+            --checkers=16 \
+            --retries=5 \
+            --low-level-retries=10 \
+            --header-upload "Cache-Control: public, max-age=2592000" \
+            --stats=5s \
+            -v
+
+      - name: Generate Streaming Link
+        run: |
+          WORKER_BASE="${{ vars.CF_WORKER_URL }}"
+          WORKER_BASE="${WORKER_BASE%/}"
+          if [ -z "$WORKER_BASE" ]; then
+            WORKER_BASE="https://bucket.test-01b.workers.dev"
+          fi
+
+          FOLDER="${{ github.event.inputs.folder_name }}"
+          PUBLIC_URL="${WORKER_BASE}/${FOLDER}/playlist.m3u8"
+
+          echo ""
+          echo "============================================================"
+          echo "SUCCESS! 100% UPLOAD COMPLETED WITHOUT SSL ISSUES."
+          echo "YOUR PUBLIC M3U8 STREAM LINK:"
+          echo "$PUBLIC_URL"
+          echo "============================================================"
+          echo ""
