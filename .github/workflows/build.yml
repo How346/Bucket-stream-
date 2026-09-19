@@ -49,21 +49,25 @@ jobs:
           echo ">> Total segments created:"
           ls output | wc -l
 
-      - name: Configure Rclone for Backblaze B2
-        run: |
-          mkdir -p ~/.config/rclone
-          cat <<EOF > ~/.config/rclone/rclone.conf
-          [b2remote]
-          type = b2
-          account = ${{ vars.B2_KEY_ID }}
-          key = ${{ vars.B2_APP_KEY }}
-          hard_delete = true
-          EOF
-
       - name: Upload to Backblaze via Rclone
+        env:
+          RCLONE_CONFIG_B2REMOTE_TYPE: b2
+          RCLONE_CONFIG_B2REMOTE_ACCOUNT: ${{ vars.B2_KEY_ID }}
+          RCLONE_CONFIG_B2REMOTE_KEY: ${{ vars.B2_APP_KEY }}
+          BUCKET_NAME: ${{ vars.B2_BUCKET_NAME }}
+          FOLDER: ${{ github.event.inputs.folder_name }}
         run: |
-          echo ">> Uploading all segments with Rclone (Native B2 API - Zero SSL Drops)..."
-          rclone copy output/ "b2remote:${{ vars.B2_BUCKET_NAME }}/${{ github.event.inputs.folder_name }}/" \
+          # पहले चेक करें कि वेरिएबल्स मौजूद हैं या नहीं
+          if [ -z "$RCLONE_CONFIG_B2REMOTE_ACCOUNT" ] || [ -z "$RCLONE_CONFIG_B2REMOTE_KEY" ] || [ -z "$BUCKET_NAME" ]; then
+            echo "============================================================"
+            echo "CRITICAL ERROR: MISSING GITHUB VARIABLES!"
+            echo "Please ensure B2_KEY_ID, B2_APP_KEY, and B2_BUCKET_NAME are set in your repository's Variables."
+            echo "============================================================"
+            exit 1
+          fi
+
+          echo ">> Uploading all segments with Rclone..."
+          rclone copy output/ "b2remote:${BUCKET_NAME}/${FOLDER}/" \
             --transfers=8 \
             --checkers=16 \
             --retries=5 \
@@ -73,14 +77,15 @@ jobs:
             -v
 
       - name: Generate Streaming Link
+        env:
+          WORKER_URL: ${{ vars.CF_WORKER_URL }}
+          FOLDER: ${{ github.event.inputs.folder_name }}
         run: |
-          WORKER_BASE="${{ vars.CF_WORKER_URL }}"
-          WORKER_BASE="${WORKER_BASE%/}"
+          WORKER_BASE="${WORKER_URL%/}"
           if [ -z "$WORKER_BASE" ]; then
-            WORKER_BASE="https://bucket.test-01b.workers.dev"
+            WORKER_BASE="https://YOUR_WORKER_NAME.workers.dev"
           fi
 
-          FOLDER="${{ github.event.inputs.folder_name }}"
           PUBLIC_URL="${WORKER_BASE}/${FOLDER}/playlist.m3u8"
 
           echo ""
