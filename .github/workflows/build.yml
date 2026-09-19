@@ -59,11 +59,11 @@ jobs:
 
       - name: Upload to Backblaze Private Bucket
         env:
-          KEY_ID: ${{ secrets.B2_KEY_ID }}
-          APP_KEY: ${{ secrets.B2_APP_KEY }}
-          BUCKET: ${{ secrets.B2_BUCKET_NAME }}
-          ENDPOINT: ${{ secrets.B2_ENDPOINT }}
-          CF_WORKER_URL: ${{ secrets.CF_WORKER_URL }}
+          KEY_ID: ${{ vars.B2_KEY_ID }}
+          APP_KEY: ${{ vars.B2_APP_KEY }}
+          BUCKET: ${{ vars.B2_BUCKET_NAME }}
+          ENDPOINT: ${{ vars.B2_ENDPOINT }}
+          CF_WORKER_URL: ${{ vars.CF_WORKER_URL }}
           FOLDER: ${{ github.event.inputs.folder_name }}
         run: |
           python - <<EOF
@@ -75,7 +75,7 @@ jobs:
           app_key = os.environ.get('APP_KEY', '').strip()
           bucket = os.environ.get('BUCKET', '').strip()
 
-          # चेक करें कि कोई सीक्रेट छूटा तो नहीं है
+          # चेक करें कि कोई Variable छूटा तो नहीं है
           missing = []
           if not raw_endpoint: missing.append("B2_ENDPOINT")
           if not key_id: missing.append("B2_KEY_ID")
@@ -84,8 +84,8 @@ jobs:
 
           if missing:
               print("\n" + "!"*60)
-              print(f"[CRITICAL ERROR] Missing GitHub Secrets: {', '.join(missing)}")
-              print("Please add them in Repo Settings -> Secrets and variables -> Actions")
+              print(f"[CRITICAL ERROR] Missing GitHub Repository Variables: {', '.join(missing)}")
+              print("Please check Repo Settings -> Secrets and variables -> Actions -> Variables tab")
               print("!"*60 + "\n")
               sys.exit(1)
 
