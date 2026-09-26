@@ -45,7 +45,7 @@ jobs:
             -start_number 0 -hls_time 10 -hls_list_size 0 \
             -hls_segment_filename "output/seg_%03d.jpg" output/playlist.m3u8
 
-      - name: Upload to Telegram & Create DB
+            - name: Upload to Telegram & Create DB
         env:
           TG_BOT_TOKEN: ${{ vars.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ vars.TG_CHAT_ID }}
@@ -67,6 +67,10 @@ jobs:
           os.makedirs('db', exist_ok=True)
           files = sorted(os.listdir('output'))
           
+          # Speed Hack: Session का इस्तेमाल ताकि बार-बार नया कनेक्शन न बनाना पड़े
+          session = requests.Session()
+          url = f'https://api.telegram.org/bot{TOKEN}/sendDocument'
+          
           for filename in files:
               file_path = f'output/{filename}'
               
@@ -75,32 +79,31 @@ jobs:
                   continue
                   
               success = False
-              # जब तक फाइल अपलोड नहीं होती, बॉट आगे नहीं बढ़ेगा
               while not success:
                   with open(file_path, 'rb') as f:
-                      url = f'https://api.telegram.org/bot{TOKEN}/sendDocument'
-                      response = requests.post(url, data={'chat_id': CHAT_ID}, files={'document': f}).json()
+                      # Session के जरिए फास्ट अपलोड
+                      response = session.post(url, data={'chat_id': CHAT_ID}, files={'document': f}).json()
                       
                       if response.get('ok'):
                           map_data[filename] = response['result']['document']['file_id']
                           print(f'Uploaded: {filename}')
                           success = True
-                          time.sleep(1) # टेलीग्राम को खुश रखने के लिए हर फाइल के बाद 1 सेकंड का ब्रेक
+                          # ब्रेक को 1 सेकंड से घटाकर 0.2 सेकंड कर दिया है
+                          time.sleep(0.2)
                       
                       elif response.get('error_code') == 429:
-                          wait_time = response.get('parameters', {}).get('retry_after', 5)
-                          print(f'Rate Limited! Waiting {wait_time} seconds before retrying {filename}...')
-                          time.sleep(wait_time) # टेलीग्राम जितना इंतज़ार करने बोलेगा, उतना रुकेगा
+                          wait_time = response.get('parameters', {}).get('retry_after', 3)
+                          print(f'Rate Limited! Waiting {wait_time} seconds...')
+                          time.sleep(wait_time)
                       
                       else:
                           print(f'Error uploading {filename}: {response}')
-                          time.sleep(3) # किसी और एरर पर 3 सेकंड रुककर फिर ट्राई करेगा
+                          time.sleep(2)
           
           with open(f'db/{FOLDER}_map.json', 'w') as f:
               json.dump(map_data, f, indent=4)
           "
-
-
+          
       - name: Save DB to GitHub Repo
         run: |
           git config --global user.name "Telegram Bot"
