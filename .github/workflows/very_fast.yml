@@ -16,7 +16,6 @@ jobs:
   process-and-upload:
     runs-on: ubuntu-latest
     
-    # यह परमिशन GitHub Bot को map.json फाइल वापस रिपॉजिटरी में सेव करने की इजाज़त देती है
     permissions:
       contents: write
 
@@ -24,90 +23,75 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Install System Tools (FFmpeg, yt-dlp & Python Requests)
+      - name: Install System Tools
         run: |
-          echo ">> Installing FFmpeg and Python requests..."
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg python3-requests
-
-          echo ">> Installing yt-dlp..."
           sudo wget -qO /usr/local/bin/yt-dlp https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp
           sudo chmod a+rx /usr/local/bin/yt-dlp
 
       - name: Download Video File
         run: |
-          echo ">> Downloading video via yt-dlp..."
-          yt-dlp --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+          yt-dlp --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" \
             -f "best[ext=mp4]/best" \
             -o "input.mp4" "${{ github.event.inputs.video_url }}"
-          
-          echo ">> Checking downloaded file size..."
-          ls -lh input.mp4
 
       - name: Slice Video (Direct Copy - No Encoding)
         run: |
           mkdir -p output
-          echo ">> Slicing video into 10s chunks WITHOUT re-encoding..."
-          
-          # -c copy से एन्कोडिंग नहीं होगी, सिर्फ फाइल कटेगी (सुपरफास्ट)
           ffmpeg -y -i input.mp4 \
             -map_metadata -1 -map 0:v:0 -map 0:a:0? \
             -c copy \
             -start_number 0 -hls_time 10 -hls_list_size 0 \
             -hls_segment_filename "output/seg_%03d.jpg" output/playlist.m3u8
-          
-          echo ">> Total segments created:"
-          ls output | wc -l
 
-      - name: Upload to Telegram & Create JSON Map
+      - name: Upload to Telegram & Create DB
         env:
           TG_BOT_TOKEN: ${{ vars.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ vars.TG_CHAT_ID }}
           FOLDER: ${{ github.event.inputs.folder_name }}
         run: |
           if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then
-            echo "CRITICAL ERROR: Telegram Variables not set!"
+            echo "Error: Telegram Variables missing!"
             exit 1
           fi
-
-          echo ">> Uploading chunks to Telegram and generating map..."
           
           python3 -c "
-          import os, requests, json
+          import os, requests, json, shutil
           
           TOKEN = os.environ['TG_BOT_TOKEN']
           CHAT_ID = os.environ['TG_CHAT_ID']
           FOLDER = os.environ['FOLDER']
           
           map_data = {}
+          os.makedirs('db', exist_ok=True)
           files = sorted(os.listdir('output'))
-          
-          print(f'Uploading {len(files)} files to Telegram...')
           
           for filename in files:
               file_path = f'output/{filename}'
+              
+              if filename.endswith('.m3u8'):
+                  shutil.copy(file_path, f'db/{FOLDER}_playlist.m3u8')
+                  continue
+                  
               with open(file_path, 'rb') as f:
                   url = f'https://api.telegram.org/bot{TOKEN}/sendDocument'
                   response = requests.post(url, data={'chat_id': CHAT_ID}, files={'document': f}).json()
                   
                   if response.get('ok'):
-                      file_id = response['result']['document']['file_id']
-                      map_data[filename] = file_id
+                      map_data[filename] = response['result']['document']['file_id']
                       print(f'Uploaded: {filename}')
                   else:
                       print(f'Error uploading {filename}: {response}')
           
-          os.makedirs('db', exist_ok=True)
           with open(f'db/{FOLDER}_map.json', 'w') as f:
               json.dump(map_data, f, indent=4)
           "
 
-      - name: Save JSON Map to GitHub Repo
+      - name: Save DB to GitHub Repo
         run: |
-          echo ">> Saving file map to repository..."
           git config --global user.name "Telegram Bot"
           git config --global user.email "bot@github.com"
           git add db/
-          # अगर कोई बदलाव नहीं है तो एरर से बचने के लिए
-          git diff --quiet && git diff --staged --quiet || git commit -m "Added Telegram map for ${{ github.event.inputs.folder_name }}"
+          git diff --quiet && git diff --staged --quiet || git commit -m "Updated DB for ${{ github.event.inputs.folder_name }}"
           git push
