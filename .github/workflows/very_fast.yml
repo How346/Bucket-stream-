@@ -45,7 +45,7 @@ jobs:
             -start_number 0 -hls_time 10 -hls_list_size 0 \
             -hls_segment_filename "output/seg_%03d.jpg" output/playlist.m3u8
 
-            - name: Upload to Telegram & Create DB
+      - name: Upload to Telegram & Create DB
         env:
           TG_BOT_TOKEN: ${{ vars.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ vars.TG_CHAT_ID }}
