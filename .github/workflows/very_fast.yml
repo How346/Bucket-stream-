@@ -57,7 +57,7 @@ jobs:
           fi
           
           python3 -c "
-          import os, requests, json, shutil
+          import os, requests, json, shutil, time
           
           TOKEN = os.environ['TG_BOT_TOKEN']
           CHAT_ID = os.environ['TG_CHAT_ID']
@@ -74,19 +74,32 @@ jobs:
                   shutil.copy(file_path, f'db/{FOLDER}_playlist.m3u8')
                   continue
                   
-              with open(file_path, 'rb') as f:
-                  url = f'https://api.telegram.org/bot{TOKEN}/sendDocument'
-                  response = requests.post(url, data={'chat_id': CHAT_ID}, files={'document': f}).json()
-                  
-                  if response.get('ok'):
-                      map_data[filename] = response['result']['document']['file_id']
-                      print(f'Uploaded: {filename}')
-                  else:
-                      print(f'Error uploading {filename}: {response}')
+              success = False
+              # जब तक फाइल अपलोड नहीं होती, बॉट आगे नहीं बढ़ेगा
+              while not success:
+                  with open(file_path, 'rb') as f:
+                      url = f'https://api.telegram.org/bot{TOKEN}/sendDocument'
+                      response = requests.post(url, data={'chat_id': CHAT_ID}, files={'document': f}).json()
+                      
+                      if response.get('ok'):
+                          map_data[filename] = response['result']['document']['file_id']
+                          print(f'Uploaded: {filename}')
+                          success = True
+                          time.sleep(1) # टेलीग्राम को खुश रखने के लिए हर फाइल के बाद 1 सेकंड का ब्रेक
+                      
+                      elif response.get('error_code') == 429:
+                          wait_time = response.get('parameters', {}).get('retry_after', 5)
+                          print(f'Rate Limited! Waiting {wait_time} seconds before retrying {filename}...')
+                          time.sleep(wait_time) # टेलीग्राम जितना इंतज़ार करने बोलेगा, उतना रुकेगा
+                      
+                      else:
+                          print(f'Error uploading {filename}: {response}')
+                          time.sleep(3) # किसी और एरर पर 3 सेकंड रुककर फिर ट्राई करेगा
           
           with open(f'db/{FOLDER}_map.json', 'w') as f:
               json.dump(map_data, f, indent=4)
           "
+
 
       - name: Save DB to GitHub Repo
         run: |
