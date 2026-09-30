@@ -1,49 +1,107 @@
-name: Hard Rotate Video & Upload to Backblaze
+name: Rotate 90° & Upload Single Video to B2
 
 on:
   workflow_dispatch:
     inputs:
       video_url:
-        description: 'वीडियो का डायरेक्ट लिंक डालें (URL)'
+        description: 'Direct Video URL'
         required: true
-        type: string
+        default: 'https://archive.org/download/BigBuckBunny_328/BigBuckBunny_512kb.mp4'
+      file_name:
+        description: 'Output File Name (e.g. myvideo.mp4)'
+        required: true
+        default: 'rotated_video.mp4'
+      folder_name:
+        description: 'B2 Folder Name (without spaces)'
+        required: true
+        default: 'movie1'
 
 jobs:
   process-and-upload:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Install FFmpeg and Backblaze CLI
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
-          # pipx का इस्तेमाल कर रहे हैं ताकि B2 CLI बिना किसी एरर के इंस्टॉल हो
-          pipx install b2
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-      - name: Download Video
+      - name: Install System Tools (FFmpeg, yt-dlp & Rclone)
         run: |
-          echo "Downloading video from provided URL..."
-          curl -L -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" -o input_video.mp4 "${{ github.event.inputs.video_url }}"
+          echo ">> Installing FFmpeg and Rclone..."
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg rclone
 
-      - name: Hard Rotate Video (Re-encoding)
+          echo ">> Installing yt-dlp..."
+          sudo wget -qO /usr/local/bin/yt-dlp https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp
+          sudo chmod a+rx /usr/local/bin/yt-dlp
+
+      - name: Download Video File
         run: |
-          echo "Re-encoding video with 90 degree clockwise rotation..."
-          # transpose=1 का मतलब है 90 डिग्री क्लॉकवाइज घुमाना
-          # -c:a copy का मतलब है ऑडियो को बिना छेड़े वैसा ही रखना ताकि काम जल्दी हो
-          ffmpeg -i input_video.mp4 -vf "transpose=1" -c:a copy output_video.mp4
+          echo ">> Downloading video via yt-dlp..."
+          yt-dlp --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+            -f "best[ext=mp4]/best" \
+            -o "input.mp4" "${{ github.event.inputs.video_url }}"
+          
+          echo ">> Checking downloaded file size..."
+          ls -lh input.mp4
 
-      - name: Upload to Backblaze B2
+      - name: Hard Rotate (90°) Without Losing Quality
+        run: |
+          echo ">> Rotating 90 degrees clockwise as a single file..."
+          
+          # -vf "transpose=1" (90° क्लॉकवाइज़)
+          # -crf 18 (ओरिजिनल जैसी बेहतरीन वीडियो क्वालिटी बनाए रखने के लिए)
+          # -c:a copy (ऑडियो को बिना चेंज किए डायरेक्ट कॉपी करेगा)
+          ffmpeg -y -i input.mp4 \
+            -vf "transpose=1" \
+            -c:v libx264 -preset fast -crf 18 \
+            -c:a copy \
+            output.mp4
+          
+          echo ">> Processing completed. Output file size:"
+          ls -lh output.mp4
+
+      - name: Upload Single File to Backblaze via Rclone
         env:
-          B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
-          B2_APP_KEY: ${{ secrets.B2_APP_KEY }}
-          B2_BUCKET_NAME: ${{ secrets.B2_BUCKET_NAME }}
+          RCLONE_CONFIG_B2REMOTE_TYPE: b2
+          RCLONE_CONFIG_B2REMOTE_ACCOUNT: ${{ secrets.B2_KEY_ID }}
+          RCLONE_CONFIG_B2REMOTE_KEY: ${{ secrets.B2_APP_KEY }}
+          BUCKET_NAME: ${{ secrets.B2_BUCKET_NAME }}
+          FOLDER: ${{ github.event.inputs.folder_name }}
+          FILENAME: ${{ github.event.inputs.file_name }}
         run: |
-          echo "Authorizing Backblaze Account..."
-          b2 account authorize "$B2_KEY_ID" "$B2_APP_KEY"
-          
-          echo "Uploading Video to Backblaze..."
-          # एक यूनिक नाम बनाने के लिए हम टाइमस्टैम्प का इस्तेमाल कर रहे हैं
-          REMOTE_FILE_NAME="rotated_video_$(date +%s).mp4"
-          b2 file upload "$B2_BUCKET_NAME" output_video.mp4 "$REMOTE_FILE_NAME"
-          
-          echo "Upload Successful! File Name: $REMOTE_FILE_NAME"
+          # Check for missing variables
+          if [ -z "$RCLONE_CONFIG_B2REMOTE_ACCOUNT" ] || [ -z "$RCLONE_CONFIG_B2REMOTE_KEY" ] || [ -z "$BUCKET_NAME" ]; then
+            echo "============================================================"
+            echo "CRITICAL ERROR: MISSING GITHUB SECRETS!"
+            echo "Please ensure B2_KEY_ID, B2_APP_KEY, and B2_BUCKET_NAME are set in your repository's Secrets."
+            echo "============================================================"
+            exit 1
+          fi
+
+          echo ">> Uploading single file with Rclone..."
+          # rclone copyto का इस्तेमाल ताकि फाइल आपके मनचाहे नाम से बकेट में सेव हो
+          rclone copyto output.mp4 "b2remote:${BUCKET_NAME}/${FOLDER}/${FILENAME}" \
+            --header-upload "Cache-Control: public, max-age=2592000" \
+            --stats=5s \
+            -v
+
+      - name: Generate Public Link
+        env:
+          WORKER_URL: ${{ vars.CF_WORKER_URL }}
+          FOLDER: ${{ github.event.inputs.folder_name }}
+          FILENAME: ${{ github.event.inputs.file_name }}
+        run: |
+          WORKER_BASE="${WORKER_URL%/}"
+          if [ -z "$WORKER_BASE" ]; then
+            WORKER_BASE="https://YOUR_WORKER_NAME.workers.dev"
+          fi
+
+          PUBLIC_URL="${WORKER_BASE}/${FOLDER}/${FILENAME}"
+
+          echo ""
+          echo "============================================================"
+          echo "SUCCESS! VIDEO ROTATED & UPLOADED."
+          echo "YOUR FILE LINK:"
+          echo "$PUBLIC_URL"
+          echo "============================================================"
+          echo ""
