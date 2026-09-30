@@ -21,7 +21,7 @@ jobs:
       - name: Download Video
         run: |
           echo "Downloading video from provided URL..."
-          wget -O input_video.mp4 "${{ github.event.inputs.video_url }}"
+          curl -L -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" -o input_video.mp4 "${{ github.event.inputs.video_url }}"
 
       - name: Rotate Metadata by 90 Degrees
         run: |
