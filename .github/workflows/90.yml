@@ -1,4 +1,4 @@
-name:  Metadata Rotator
+name: Hard Rotate Video & Upload to Backblaze
 
 on:
   workflow_dispatch:
@@ -9,34 +9,41 @@ on:
         type: string
 
 jobs:
-  process-video:
+  process-and-upload:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Install FFmpeg
+      - name: Install FFmpeg and Backblaze CLI
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
+          # pipx का इस्तेमाल कर रहे हैं ताकि B2 CLI बिना किसी एरर के इंस्टॉल हो
+          pipx install b2
 
       - name: Download Video
         run: |
           echo "Downloading video from provided URL..."
-          curl -L -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" -o input_video.mp4 "${{ github.event.inputs.video_url }}"
+          curl -L -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" -o input_video.mp4 "${{ github.event.inputs.video_url }}"
 
-      - name: Rotate Metadata by 90 Degrees
+      - name: Hard Rotate Video (Re-encoding)
         run: |
-          echo "Applying 90 degree metadata rotation..."
-          ffmpeg -i input_video.mp4 -c copy -metadata:s:v:0 rotate=90 output_video.mp4
+          echo "Re-encoding video with 90 degree clockwise rotation..."
+          # transpose=1 का मतलब है 90 डिग्री क्लॉकवाइज घुमाना
+          # -c:a copy का मतलब है ऑडियो को बिना छेड़े वैसा ही रखना ताकि काम जल्दी हो
+          ffmpeg -i input_video.mp4 -vf "transpose=1" -c:a copy output_video.mp4
 
-      - name: Verify Rotation Metadata
+      - name: Upload to Backblaze B2
+        env:
+          B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
+          B2_APP_KEY: ${{ secrets.B2_APP_KEY }}
+          B2_BUCKET_NAME: ${{ secrets.B2_BUCKET_NAME }}
         run: |
-          echo "Checking if rotation metadata is applied..."
-          ffprobe -v quiet -select_streams v:0 -show_entries stream_tags=rotate -of default=nw=1:nk=1 output_video.mp4
+          echo "Authorizing Backblaze Account..."
+          b2 account authorize "$B2_KEY_ID" "$B2_APP_KEY"
           
-
-      - name: Upload Final Video
-        uses: actions/upload-artifact@v4
-        with:
-          name: Rotated-Video
-          path: output_video.mp4
-          retention-days: 1
+          echo "Uploading Video to Backblaze..."
+          # एक यूनिक नाम बनाने के लिए हम टाइमस्टैम्प का इस्तेमाल कर रहे हैं
+          REMOTE_FILE_NAME="rotated_video_$(date +%s).mp4"
+          b2 file upload "$B2_BUCKET_NAME" output_video.mp4 "$REMOTE_FILE_NAME"
+          
+          echo "Upload Successful! File Name: $REMOTE_FILE_NAME"
