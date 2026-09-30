@@ -1,0 +1,36 @@
+name:  Metadata Rotator
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: 'वीडियो का डायरेक्ट लिंक डालें (URL)'
+        required: true
+        type: string
+
+jobs:
+  process-video:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Download Video
+        run: |
+          echo "Downloading video from provided URL..."
+          wget -O input_video.mp4 "${{ github.event.inputs.video_url }}"
+
+      - name: Rotate Metadata by 90 Degrees
+        run: |
+          echo "Applying 90 degree metadata rotation..."
+          ffmpeg -i input_video.mp4 -c copy -metadata:s:v:0 rotate=90 output_video.mp4
+
+      - name: Upload Final Video
+        uses: actions/upload-artifact@v4
+        with:
+          name: Rotated-Video
+          path: output_video.mp4
+          retention-days: 1
