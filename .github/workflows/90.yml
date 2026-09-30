@@ -27,7 +27,6 @@ jobs:
       - name: Install System Tools (FFmpeg, yt-dlp & Rclone)
         run: |
           echo ">> Installing FFmpeg and Rclone..."
-          # DEBIAN_FRONTEND=noninteractive के इस्तेमाल से यह इंस्टॉल होने में अटकेगा नहीं
           sudo env DEBIAN_FRONTEND=noninteractive apt-get update -yqq
           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -yqq ffmpeg rclone
 
@@ -49,9 +48,6 @@ jobs:
         run: |
           echo ">> Rotating 90 degrees clockwise as a single file..."
           
-          # -vf "transpose=1" (90° क्लॉकवाइज़ घुमाएगा)
-          # -crf 18 (हाई क्वालिटी बनाए रखेगा)
-          # -c:a copy (ऑडियो बिना छेड़े कॉपी करेगा)
           ffmpeg -y -i input.mp4 \
             -vf "transpose=1" \
             -c:v libx264 -preset fast -crf 18 \
@@ -64,17 +60,17 @@ jobs:
       - name: Upload Single File to Backblaze via Rclone
         env:
           RCLONE_CONFIG_B2REMOTE_TYPE: b2
-          RCLONE_CONFIG_B2REMOTE_ACCOUNT: ${{ secrets.B2_KEY_ID }}
-          RCLONE_CONFIG_B2REMOTE_KEY: ${{ secrets.B2_APP_KEY }}
-          BUCKET_NAME: ${{ secrets.B2_BUCKET_NAME }}
+          RCLONE_CONFIG_B2REMOTE_ACCOUNT: ${{ vars.B2_KEY_ID }}
+          RCLONE_CONFIG_B2REMOTE_KEY: ${{ vars.B2_APP_KEY }}
+          BUCKET_NAME: ${{ vars.B2_BUCKET_NAME }}
           FOLDER: ${{ github.event.inputs.folder_name }}
           FILENAME: ${{ github.event.inputs.file_name }}
         run: |
           # Check for missing variables
           if [ -z "$RCLONE_CONFIG_B2REMOTE_ACCOUNT" ] || [ -z "$RCLONE_CONFIG_B2REMOTE_KEY" ] || [ -z "$BUCKET_NAME" ]; then
             echo "============================================================"
-            echo "CRITICAL ERROR: MISSING GITHUB SECRETS!"
-            echo "Please ensure B2_KEY_ID, B2_APP_KEY, and B2_BUCKET_NAME are set in your repository's Secrets."
+            echo "CRITICAL ERROR: MISSING GITHUB VARIABLES!"
+            echo "Please ensure B2_KEY_ID, B2_APP_KEY, and B2_BUCKET_NAME are set in your repository's Variables."
             echo "============================================================"
             exit 1
           fi
