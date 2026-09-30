@@ -27,8 +27,9 @@ jobs:
       - name: Install System Tools (FFmpeg, yt-dlp & Rclone)
         run: |
           echo ">> Installing FFmpeg and Rclone..."
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg rclone
+          # DEBIAN_FRONTEND=noninteractive के इस्तेमाल से यह इंस्टॉल होने में अटकेगा नहीं
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get update -yqq
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -yqq ffmpeg rclone
 
           echo ">> Installing yt-dlp..."
           sudo wget -qO /usr/local/bin/yt-dlp https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp
@@ -48,9 +49,9 @@ jobs:
         run: |
           echo ">> Rotating 90 degrees clockwise as a single file..."
           
-          # -vf "transpose=1" (90° क्लॉकवाइज़)
-          # -crf 18 (ओरिजिनल जैसी बेहतरीन वीडियो क्वालिटी बनाए रखने के लिए)
-          # -c:a copy (ऑडियो को बिना चेंज किए डायरेक्ट कॉपी करेगा)
+          # -vf "transpose=1" (90° क्लॉकवाइज़ घुमाएगा)
+          # -crf 18 (हाई क्वालिटी बनाए रखेगा)
+          # -c:a copy (ऑडियो बिना छेड़े कॉपी करेगा)
           ffmpeg -y -i input.mp4 \
             -vf "transpose=1" \
             -c:v libx264 -preset fast -crf 18 \
@@ -79,7 +80,6 @@ jobs:
           fi
 
           echo ">> Uploading single file with Rclone..."
-          # rclone copyto का इस्तेमाल ताकि फाइल आपके मनचाहे नाम से बकेट में सेव हो
           rclone copyto output.mp4 "b2remote:${BUCKET_NAME}/${FOLDER}/${FILENAME}" \
             --header-upload "Cache-Control: public, max-age=2592000" \
             --stats=5s \
