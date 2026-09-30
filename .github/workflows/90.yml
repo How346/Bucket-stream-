@@ -28,6 +28,12 @@ jobs:
           echo "Applying 90 degree metadata rotation..."
           ffmpeg -i input_video.mp4 -c copy -metadata:s:v:0 rotate=90 output_video.mp4
 
+      - name: Verify Rotation Metadata
+        run: |
+          echo "Checking if rotation metadata is applied..."
+          ffprobe -v quiet -select_streams v:0 -show_entries stream_tags=rotate -of default=nw=1:nk=1 output_video.mp4
+          
+
       - name: Upload Final Video
         uses: actions/upload-artifact@v4
         with:
