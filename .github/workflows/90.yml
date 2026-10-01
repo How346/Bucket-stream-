@@ -75,9 +75,16 @@ jobs:
             exit 1
           fi
 
-          echo ">> Uploading single file with Rclone..."
-          rclone copyto output.mp4 "b2remote:${BUCKET_NAME}/${FOLDER}/${FILENAME}" \
+          echo ">> Preparing file for upload..."
+          # 403 एरर से बचने के लिए फाइल को एक फोल्डर में डाल रहे हैं
+          mkdir -p upload_folder
+          mv output.mp4 "upload_folder/$FILENAME"
+
+          echo ">> Uploading file with Rclone (Forcing upload without checking destination)..."
+          # --no-check-dest लगाने से Rclone सर्वर पर फाइल चेक नहीं करेगा और सीधा अपलोड कर देगा
+          rclone copy upload_folder/ "b2remote:${BUCKET_NAME}/${FOLDER}/" \
             --header-upload "Cache-Control: public, max-age=2592000" \
+            --no-check-dest \
             --stats=5s \
             -v
 
