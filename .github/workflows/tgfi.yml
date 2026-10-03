@@ -1,6 +1,5 @@
 name: Video Slicer to Telegram (Pro Auto)
 
-# इसे मैन्युअल और टेलीग्राम वेबहुक दोनों से चलाने के लिए
 on:
   workflow_dispatch:
     inputs:
@@ -19,7 +18,6 @@ jobs:
   process-and-upload:
     runs-on: ubuntu-latest
     
-    # गिटहब बॉट को रिपॉजिटरी में फाइल सेव करने की परमिशन
     permissions:
       contents: write
 
@@ -27,7 +25,6 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # वेबहुक और मैन्युअल दोनों के इनपुट्स को सही जगह सेट करना
       - name: Set Variables
         id: vars
         run: |
@@ -52,14 +49,13 @@ jobs:
             -f "best[ext=mp4]/best" \
             -o "input.mp4" "$VIDEO_URL"
 
-      - name: Slice Video (Direct Copy - 10s fMP4)
+      - name: Slice Video (Direct Copy - Standard)
         run: |
           mkdir -p output
           ffmpeg -y -i input.mp4 \
             -map_metadata -1 -map 0:v:0 -map 0:a:0? \
             -c copy \
             -start_number 0 -hls_time 10 -hls_list_size 0 \
-            -hls_segment_type fmp4 \
             -hls_segment_filename "output/seg_%03d.jpg" output/playlist.m3u8
 
       - name: Upload to Telegram (Multi-Bot Round Robin)
@@ -122,17 +118,16 @@ jobs:
           git config --global user.email "bot@github.com"
           git add db/
           git diff --quiet && git diff --staged --quiet || git commit -m "Updated DB for $FOLDER_NAME"
-          # अगर गिटहब में कोई और बदलाव हुआ हो, तो उसे पहले पुल करेगा फिर पुश करेगा (एरर से बचने के लिए)
           git pull --rebase origin main
           git push
 
       - name: Send Final URL to Telegram (Manager Bot)
         env:
-          TG_MANAGER_TOKEN: ${{ vars.TG_MANAGER_TOKEN }} # मैनेजर बॉट का टोकन
-          TG_MANAGER_CHAT_ID: ${{ vars.TG_MANAGER_CHAT_ID }} # आपकी चैट आईडी
+          TG_MANAGER_TOKEN: ${{ vars.TG_MANAGER_TOKEN }}
+          TG_MANAGER_CHAT_ID: ${{ vars.TG_MANAGER_CHAT_ID }}
         run: |
-          # 🚨 यहां "YOUR-WORKER-NAME.workers.dev" को हटाकर अपने असली स्ट्रीमिंग क्लाउडफ्लेयर डोमेन का नाम डालें 🚨
-          CF_DOMAIN="https://tg.test-01b.workers.dev" 
+          # 🚨 यहां "YOUR-WORKER-NAME.workers.dev" को हटाकर अपना असली स्ट्रीमिंग क्लाउडफ्लेयर डोमेन डालें 🚨
+          CF_DOMAIN="tg.test-01b.workers.dev" 
           
           FINAL_URL="https://$CF_DOMAIN/$FOLDER_NAME/playlist.m3u8"
           MESSAGE="✅ *Streaming Ready!*%0A%0A📁 Folder: \`$FOLDER_NAME\`%0A🔗 Stream Link: $FINAL_URL"
