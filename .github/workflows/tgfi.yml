@@ -1,0 +1,143 @@
+name: Video Slicer to Telegram (Pro Auto)
+
+# इसे मैन्युअल और टेलीग्राम वेबहुक दोनों से चलाने के लिए
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: 'Direct Video URL'
+        required: true
+        default: 'https://archive.org/download/BigBuckBunny_328/BigBuckBunny_512kb.mp4'
+      folder_name:
+        description: 'Folder Name (e.g. movie1)'
+        required: true
+        default: 'movie1'
+  repository_dispatch:
+    types: [stream_trigger]
+
+jobs:
+  process-and-upload:
+    runs-on: ubuntu-latest
+    
+    # गिटहब बॉट को रिपॉजिटरी में फाइल सेव करने की परमिशन
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # वेबहुक और मैन्युअल दोनों के इनपुट्स को सही जगह सेट करना
+      - name: Set Variables
+        id: vars
+        run: |
+          if [ "${{ github.event_name }}" == "repository_dispatch" ]; then
+            echo "VIDEO_URL=${{ github.event.client_payload.video_url }}" >> $GITHUB_ENV
+            echo "FOLDER_NAME=${{ github.event.client_payload.folder_name }}" >> $GITHUB_ENV
+          else
+            echo "VIDEO_URL=${{ github.event.inputs.video_url }}" >> $GITHUB_ENV
+            echo "FOLDER_NAME=${{ github.event.inputs.folder_name }}" >> $GITHUB_ENV
+          fi
+
+      - name: Install System Tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg python3-requests
+          sudo wget -qO /usr/local/bin/yt-dlp https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp
+          sudo chmod a+rx /usr/local/bin/yt-dlp
+
+      - name: Download Video File
+        run: |
+          yt-dlp --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" \
+            -f "best[ext=mp4]/best" \
+            -o "input.mp4" "$VIDEO_URL"
+
+      - name: Slice Video (Direct Copy - 10s fMP4)
+        run: |
+          mkdir -p output
+          ffmpeg -y -i input.mp4 \
+            -map_metadata -1 -map 0:v:0 -map 0:a:0? \
+            -c copy \
+            -start_number 0 -hls_time 10 -hls_list_size 0 \
+            -hls_segment_type fmp4 \
+            -hls_segment_filename "output/seg_%03d.jpg" output/playlist.m3u8
+
+      - name: Upload to Telegram (Multi-Bot Round Robin)
+        env:
+          TG_BOT_TOKENS: ${{ vars.TG_BOT_TOKENS }}
+          TG_CHAT_ID: ${{ vars.TG_CHAT_ID }}
+        run: |
+          python3 -c "
+          import os, requests, json, shutil, time
+          from concurrent.futures import ThreadPoolExecutor, as_completed
+          from itertools import cycle
+          
+          TOKENS = os.environ['TG_BOT_TOKENS'].split(',')
+          CHAT_ID = os.environ['TG_CHAT_ID']
+          FOLDER = os.environ['FOLDER_NAME']
+          
+          bot_pool = cycle(TOKENS)
+          os.makedirs('db', exist_ok=True)
+          output_dir = 'output'
+          
+          m3u8_file = [f for f in os.listdir(output_dir) if f.endswith('.m3u8')]
+          if m3u8_file:
+              shutil.copy(f'{output_dir}/{m3u8_file[0]}', f'db/{FOLDER}_playlist.m3u8')
+          
+          files = [f for f in os.listdir(output_dir) if f.endswith('.jpg')]
+          map_data = {}
+          
+          def upload_file(filename):
+              file_path = f'{output_dir}/{filename}'
+              while True:
+                  current_token = next(bot_pool)
+                  url = f'https://api.telegram.org/bot{current_token}/sendDocument'
+                  
+                  with open(file_path, 'rb') as f:
+                      resp = requests.post(url, data={'chat_id': CHAT_ID}, files={'document': f}).json()
+                  
+                  if resp.get('ok'):
+                      return filename, resp['result']['document']['file_id']
+                  elif resp.get('error_code') == 429:
+                      time.sleep(0.5) 
+                  else:
+                      time.sleep(1)
+          
+          print(f'Starting Multi-Bot upload with {len(TOKENS)} bots for {len(files)} files...')
+          
+          with ThreadPoolExecutor(max_workers=6) as executor:
+              futures = {executor.submit(upload_file, f): f for f in files}
+              for future in as_completed(futures):
+                  filename, file_id = future.result()
+                  map_data[filename] = file_id
+                  print(f'Uploaded: {filename}')
+          
+          with open(f'db/{FOLDER}_map.json', 'w') as f:
+              json.dump(map_data, f, indent=4)
+          "
+
+      - name: Save DB to GitHub Repo
+        run: |
+          git config --global user.name "Telegram Bot"
+          git config --global user.email "bot@github.com"
+          git add db/
+          git diff --quiet && git diff --staged --quiet || git commit -m "Updated DB for $FOLDER_NAME"
+          # अगर गिटहब में कोई और बदलाव हुआ हो, तो उसे पहले पुल करेगा फिर पुश करेगा (एरर से बचने के लिए)
+          git pull --rebase origin main
+          git push
+
+      - name: Send Final URL to Telegram (Manager Bot)
+        env:
+          TG_MANAGER_TOKEN: ${{ vars.TG_MANAGER_TOKEN }} # मैनेजर बॉट का टोकन
+          TG_MANAGER_CHAT_ID: ${{ vars.TG_MANAGER_CHAT_ID }} # आपकी चैट आईडी
+        run: |
+          # 🚨 यहां "YOUR-WORKER-NAME.workers.dev" को हटाकर अपने असली स्ट्रीमिंग क्लाउडफ्लेयर डोमेन का नाम डालें 🚨
+          CF_DOMAIN="https://tg.test-01b.workers.dev" 
+          
+          FINAL_URL="https://$CF_DOMAIN/$FOLDER_NAME/playlist.m3u8"
+          MESSAGE="✅ *Streaming Ready!*%0A%0A📁 Folder: \`$FOLDER_NAME\`%0A🔗 Stream Link: $FINAL_URL"
+          
+          curl -s -X POST "https://api.telegram.org/bot$TG_MANAGER_TOKEN/sendMessage" \
+            -d chat_id="$TG_MANAGER_CHAT_ID" \
+            -d text="$MESSAGE" \
+            -d parse_mode="Markdown"
