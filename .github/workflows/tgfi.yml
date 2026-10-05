@@ -6,18 +6,15 @@ on:
       video_url:
         description: 'Direct Video URL'
         required: true
-        default: 'https://archive.org/download/BigBuckBunny_328/BigBuckBunny_512kb.mp4'
       folder_name:
-        description: 'Folder Name (e.g. movie1)'
+        description: 'Folder Name'
         required: true
-        default: 'movie1'
   repository_dispatch:
     types: [stream_trigger]
 
 jobs:
   process-and-upload:
     runs-on: ubuntu-latest
-    
     permissions:
       contents: write
 
@@ -25,12 +22,15 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      # वेबहुक से Message ID और Chat ID रिसीव करना
       - name: Set Variables
         id: vars
         run: |
           if [ "${{ github.event_name }}" == "repository_dispatch" ]; then
             echo "VIDEO_URL=${{ github.event.client_payload.video_url }}" >> $GITHUB_ENV
             echo "FOLDER_NAME=${{ github.event.client_payload.folder_name }}" >> $GITHUB_ENV
+            echo "CHAT_ID=${{ github.event.client_payload.chat_id }}" >> $GITHUB_ENV
+            echo "MESSAGE_ID=${{ github.event.client_payload.message_id }}" >> $GITHUB_ENV
           else
             echo "VIDEO_URL=${{ github.event.inputs.video_url }}" >> $GITHUB_ENV
             echo "FOLDER_NAME=${{ github.event.inputs.folder_name }}" >> $GITHUB_ENV
@@ -43,6 +43,18 @@ jobs:
           sudo wget -qO /usr/local/bin/yt-dlp https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp
           sudo chmod a+rx /usr/local/bin/yt-dlp
 
+      - name: Update Status (Slicing)
+        env:
+          TG_MANAGER_TOKEN: ${{ vars.TG_MANAGER_TOKEN }}
+        run: |
+          if [ ! -z "$MESSAGE_ID" ]; then
+            curl -s -X POST "https://api.telegram.org/bot$TG_MANAGER_TOKEN/editMessageText" \
+              -d chat_id="$CHAT_ID" \
+              -d message_id="$MESSAGE_ID" \
+              -d text="🚀 *Processing Started!*\n📁 Folder: \`$FOLDER_NAME\`\n🔪 *Status:* Slicing Video into chunks..." \
+              -d parse_mode="Markdown"
+          fi
+
       - name: Download Video File
         run: |
           yt-dlp --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" \
@@ -52,16 +64,13 @@ jobs:
       - name: Slice Video (Direct Copy - Standard)
         run: |
           mkdir -p output
-          ffmpeg -y -i input.mp4 \
-            -map_metadata -1 -map 0:v:0 -map 0:a:0? \
-            -c copy \
-            -start_number 0 -hls_time 10 -hls_list_size 0 \
-            -hls_segment_filename "output/seg_%03d.jpg" output/playlist.m3u8
+          ffmpeg -y -i input.mp4 -map_metadata -1 -map 0:v:0 -map 0:a:0? -c copy -start_number 0 -hls_time 10 -hls_list_size 0 -hls_segment_filename "output/seg_%03d.jpg" output/playlist.m3u8
 
-      - name: Upload to Telegram (Multi-Bot Round Robin)
+      - name: Upload to Telegram (With Live Progress Bar)
         env:
           TG_BOT_TOKENS: ${{ vars.TG_BOT_TOKENS }}
-          TG_CHAT_ID: ${{ vars.TG_CHAT_ID }}
+          TG_UPLOAD_CHAT_ID: ${{ vars.TG_CHAT_ID }}
+          TG_MANAGER_TOKEN: ${{ vars.TG_MANAGER_TOKEN }}
         run: |
           python3 -c "
           import os, requests, json, shutil, time
@@ -69,8 +78,11 @@ jobs:
           from itertools import cycle
           
           TOKENS = os.environ['TG_BOT_TOKENS'].split(',')
-          CHAT_ID = os.environ['TG_CHAT_ID']
+          UPLOAD_CHAT_ID = os.environ['TG_UPLOAD_CHAT_ID']
           FOLDER = os.environ['FOLDER_NAME']
+          MANAGER_TOKEN = os.environ.get('TG_MANAGER_TOKEN')
+          USER_CHAT_ID = os.environ.get('CHAT_ID')
+          MSG_ID = os.environ.get('MESSAGE_ID')
           
           bot_pool = cycle(TOKENS)
           os.makedirs('db', exist_ok=True)
@@ -82,31 +94,46 @@ jobs:
           
           files = [f for f in os.listdir(output_dir) if f.endswith('.jpg')]
           map_data = {}
+          total_files = len(files)
+          
+          def edit_tg_message(text):
+              if USER_CHAT_ID and MSG_ID and MANAGER_TOKEN:
+                  url = f'https://api.telegram.org/bot{MANAGER_TOKEN}/editMessageText'
+                  requests.post(url, data={'chat_id': USER_CHAT_ID, 'message_id': MSG_ID, 'text': text, 'parse_mode': 'Markdown'})
           
           def upload_file(filename):
               file_path = f'{output_dir}/{filename}'
               while True:
                   current_token = next(bot_pool)
                   url = f'https://api.telegram.org/bot{current_token}/sendDocument'
-                  
                   with open(file_path, 'rb') as f:
-                      resp = requests.post(url, data={'chat_id': CHAT_ID}, files={'document': f}).json()
+                      resp = requests.post(url, data={'chat_id': UPLOAD_CHAT_ID}, files={'document': f}).json()
                   
                   if resp.get('ok'):
                       return filename, resp['result']['document']['file_id']
                   elif resp.get('error_code') == 429:
-                      time.sleep(0.5) 
+                      time.sleep(1) 
                   else:
-                      time.sleep(1)
+                      time.sleep(2)
           
-          print(f'Starting Multi-Bot upload with {len(TOKENS)} bots for {len(files)} files...')
+          completed = 0
+          last_percent = 0
           
           with ThreadPoolExecutor(max_workers=6) as executor:
               futures = {executor.submit(upload_file, f): f for f in files}
               for future in as_completed(futures):
                   filename, file_id = future.result()
                   map_data[filename] = file_id
-                  print(f'Uploaded: {filename}')
+                  completed += 1
+                  
+                  # Progress Bar Logic (हर 5% पर अपडेट करेगा)
+                  percent = int((completed / total_files) * 100)
+                  if percent >= last_percent + 5 or completed == total_files:
+                      blocks = int(percent / 10)
+                      bar = '█' * blocks + '▒' * (10 - blocks)
+                      msg = f'🚀 *Processing:* \`{FOLDER}\`\n\n📤 *Uploading:* [{bar}] {percent}%\n📁 *Files:* {completed} / {total_files}'
+                      edit_tg_message(msg)
+                      last_percent = percent
           
           with open(f'db/{FOLDER}_map.json', 'w') as f:
               json.dump(map_data, f, indent=4)
@@ -121,18 +148,25 @@ jobs:
           git pull --rebase origin main
           git push
 
-      - name: Send Final URL to Telegram (Manager Bot)
+      - name: Send Final URL (Edit Final Message)
         env:
           TG_MANAGER_TOKEN: ${{ vars.TG_MANAGER_TOKEN }}
-          TG_MANAGER_CHAT_ID: ${{ vars.TG_MANAGER_CHAT_ID }}
         run: |
-          # 🚨 यहां "YOUR-WORKER-NAME.workers.dev" को हटाकर अपना असली स्ट्रीमिंग क्लाउडफ्लेयर डोमेन डालें 🚨
           CF_DOMAIN="tg.test-01b.workers.dev" 
-          
           FINAL_URL="https://$CF_DOMAIN/$FOLDER_NAME/playlist.m3u8"
           MESSAGE="✅ *Streaming Ready!*%0A%0A📁 Folder: \`$FOLDER_NAME\`%0A🔗 Stream Link: $FINAL_URL"
           
-          curl -s -X POST "https://api.telegram.org/bot$TG_MANAGER_TOKEN/sendMessage" \
-            -d chat_id="$TG_MANAGER_CHAT_ID" \
-            -d text="$MESSAGE" \
-            -d parse_mode="Markdown"
+          if [ ! -z "$MESSAGE_ID" ]; then
+            # पुराने मैसेज को फाइनल लिंक से बदल दो
+            curl -s -X POST "https://api.telegram.org/bot$TG_MANAGER_TOKEN/editMessageText" \
+              -d chat_id="$CHAT_ID" \
+              -d message_id="$MESSAGE_ID" \
+              -d text="$MESSAGE" \
+              -d parse_mode="Markdown"
+          else
+            # अगर मैन्युअल रन किया है, तो नया मैसेज भेजो
+            curl -s -X POST "https://api.telegram.org/bot$TG_MANAGER_TOKEN/sendMessage" \
+              -d chat_id="${{ vars.TG_MANAGER_CHAT_ID }}" \
+              -d text="$MESSAGE" \
+              -d parse_mode="Markdown"
+          fi
