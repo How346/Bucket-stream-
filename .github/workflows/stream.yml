@@ -9,6 +9,12 @@ on:
       folder_name:
         description: 'Folder Name'
         required: true
+      chat_id:
+        description: 'Chat ID (Hidden)'
+        required: false
+      message_id:
+        description: 'Message ID (Hidden)'
+        required: false
   repository_dispatch:
     types: [stream_trigger]
 
@@ -33,6 +39,8 @@ jobs:
           else
             echo "VIDEO_URL=${{ github.event.inputs.video_url }}" >> $GITHUB_ENV
             echo "FOLDER_NAME=${{ github.event.inputs.folder_name }}" >> $GITHUB_ENV
+            echo "CHAT_ID=${{ github.event.inputs.chat_id }}" >> $GITHUB_ENV
+            echo "MESSAGE_ID=${{ github.event.inputs.message_id }}" >> $GITHUB_ENV
           fi
 
       - name: Install System Tools
@@ -78,14 +86,14 @@ jobs:
           from concurrent.futures import ThreadPoolExecutor, as_completed
           from itertools import cycle
           
-          TOKENS = os.environ['TG_BOT_TOKENS'].split(',')
-          UPLOAD_CHAT_ID = os.environ['TG_UPLOAD_CHAT_ID']
-          FOLDER = os.environ['FOLDER_NAME']
-          MANAGER_TOKEN = os.environ.get('TG_MANAGER_TOKEN')
-          USER_CHAT_ID = os.environ.get('CHAT_ID')
-          MSG_ID = os.environ.get('MESSAGE_ID')
+          TOKENS = os.environ.get('TG_BOT_TOKENS', '').split(',')
+          UPLOAD_CHAT_ID = os.environ.get('TG_UPLOAD_CHAT_ID', '')
+          FOLDER = os.environ.get('FOLDER_NAME', '')
+          MANAGER_TOKEN = os.environ.get('TG_MANAGER_TOKEN', '')
+          USER_CHAT_ID = os.environ.get('CHAT_ID', '')
+          MSG_ID = os.environ.get('MESSAGE_ID', '')
           
-          bot_pool = cycle(TOKENS)
+          bot_pool = cycle([t for t in TOKENS if t])
           os.makedirs('db', exist_ok=True)
           output_dir = 'output'
           
@@ -93,7 +101,7 @@ jobs:
           if m3u8_file:
               shutil.copy(f'{output_dir}/{m3u8_file[0]}', f'db/{FOLDER}_playlist.m3u8')
           
-          files = [f for f in os.listdir(output_dir) if f.endswith('.jpg')]
+          files = sorted([f for f in os.listdir(output_dir) if f.endswith('.jpg')])
           map_data = {}
           total_files = len(files)
           
@@ -121,20 +129,21 @@ jobs:
           completed = 0
           last_percent = 0
           
-          with ThreadPoolExecutor(max_workers=6) as executor:
-              futures = {executor.submit(upload_file, f): f for f in files}
-              for future in as_completed(futures):
-                  filename, file_id = future.result()
-                  map_data[filename] = file_id
-                  completed += 1
-                  
-                  percent = int((completed / total_files) * 100)
-                  if percent >= last_percent + 5 or completed == total_files:
-                      blocks = int(percent / 10)
-                      bar = '█' * blocks + '▒' * (10 - blocks)
-                      msg = f'🚀 *Processing:* \`{FOLDER}\`\n\n📤 *Uploading:* [{bar}] {percent}%\n📁 *Files:* {completed} / {total_files}'
-                      edit_tg_message(msg)
-                      last_percent = percent
+          if total_files > 0:
+              with ThreadPoolExecutor(max_workers=6) as executor:
+                  futures = {executor.submit(upload_file, f): f for f in files}
+                  for future in as_completed(futures):
+                      filename, file_id = future.result()
+                      map_data[filename] = file_id
+                      completed += 1
+                      
+                      percent = int((completed / total_files) * 100)
+                      if percent >= last_percent + 5 or completed == total_files:
+                          blocks = int(percent / 10)
+                          bar = '█' * blocks + '▒' * (10 - blocks)
+                          msg = f'🚀 *Processing:* \`{FOLDER}\`\n\n📤 *Uploading:* [{bar}] {percent}%\n📁 *Files:* {completed} / {total_files}'
+                          edit_tg_message(msg)
+                          last_percent = percent
           
           with open(f'db/{FOLDER}_map.json', 'w') as f:
               json.dump(map_data, f, indent=4)
@@ -154,13 +163,12 @@ jobs:
         env:
           TG_MANAGER_TOKEN: ${{ vars.TG_MANAGER_TOKEN }}
         run: |
-          # 🚨 यहां "YOUR-WORKER-NAME.workers.dev" को हटाकर अपना असली डोमेन डालें 🚨
-          CF_DOMAIN="tg.test-01b.workers.dev" 
+          # 🚨 यहाँ अपना क्लाउडफ्लेयर वर्कर का असली नाम डालें 🚨
+          CF_DOMAIN="YOUR-WORKER-NAME.workers.dev" 
           FINAL_URL="https://$CF_DOMAIN/$FOLDER_NAME/playlist.m3u8"
           MESSAGE="✅ *Streaming Ready!*%0A%0A📁 Folder: \`$FOLDER_NAME\`%0A🔗 Stream Link: $FINAL_URL"
           
           if [ ! -z "$MESSAGE_ID" ]; then
-            # सक्सेस होने पर कीबोर्ड (बटन) हटा दिया जाएगा और सिर्फ लिंक दिखेगा
             JSON_PAYLOAD=$(jq -n --arg chat "$CHAT_ID" --arg msg "$MESSAGE_ID" --arg text "$MESSAGE" '{chat_id: $chat, message_id: $msg, text:$text, parse_mode: "Markdown"}')
             curl -s -X POST "https://api.telegram.org/bot$TG_MANAGER_TOKEN/editMessageText" -H "Content-Type: application/json" -d "$JSON_PAYLOAD"
           fi
@@ -171,7 +179,6 @@ jobs:
           TG_MANAGER_TOKEN: ${{ vars.TG_MANAGER_TOKEN }}
         run: |
           if [ ! -z "$MESSAGE_ID" ]; then
-            # फेल होने पर एरर मैसेज दिखाएगा और बटन हटा देगा
             JSON_PAYLOAD=$(jq -n --arg chat "$CHAT_ID" --arg msg "$MESSAGE_ID" '{chat_id: $chat, message_id:$msg, text: "❌ *Process Failed!*\nAn error occurred in GitHub Actions. Check GitHub Logs.", parse_mode: "Markdown"}')
             curl -s -X POST "https://api.telegram.org/bot$TG_MANAGER_TOKEN/editMessageText" -H "Content-Type: application/json" -d "$JSON_PAYLOAD"
           fi
